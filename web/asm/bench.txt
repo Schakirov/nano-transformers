@@ -1,0 +1,8 @@
+== matmul ==
+GPU: NVIDIA L4  (sm_89, 58 SMs, 192-bit mem bus)
+naive   max|err|=2.38e-06   0.153 ms   1757 GFLOP/s
+tiled   max|err|=2.38e-06   0.119 ms   2262 GFLOP/s
+(both kernels match the CPU reference; tiled reuses shared memory)
+
+== softmax ==
+warp-softmax: max|err vs CPU|=2.05e-08   row0 sum=1.00000 (should be 1)

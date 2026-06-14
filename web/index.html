@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>nano-transformers · from one line of Python to the GPU's machine code</title>
+<link rel="stylesheet" href="/web/style.css">
+<script>
+  /* Set the theme before first paint to avoid a flash. Honour a stored
+     choice, else follow the OS preference, else default to dark. */
+  (function(){try{
+    var t=localStorage.getItem("nt-theme");
+    if(t!=="light"&&t!=="dark")
+      t=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";
+    document.documentElement.setAttribute("data-theme",t);
+  }catch(e){document.documentElement.setAttribute("data-theme","dark");}})();
+</script>
+</head>
+<body>
+<header>
+  <div class="nav">
+    <div class="brand"><b>nano</b>-transformers</div>
+    <div class="tab active" data-view="descend">Descend</div>
+    <div class="tab" data-view="arch">Architecture</div>
+    <div class="tab" data-view="train">Train &amp; watch</div>
+    <div class="tab" data-view="gpu">Into the GPU</div>
+    <div class="tab" data-view="code">Read the code</div>
+    <div class="tab toggle" id="themeToggle" role="button" tabindex="0"
+         aria-label="Toggle light and dark theme" title="Toggle theme">☀</div>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================ DESCEND ============================ -->
+<section class="view active" id="descend">
+  <h1>One transformer. Three modalities. All the way down to SASS.</h1>
+  <p class="lead">A tiny, fully readable transformer you can understand in an hour &mdash; then fall
+  through every layer of abstraction beneath it, from the Python you write to the actual
+  machine code your GPU executes. Nothing is hidden, nothing is imported from a giant framework.</p>
+
+  <div class="grid cols3">
+    <div class="panel"><h3>~600 lines of Python</h3><p class="dim" style="font-size:14px">
+      A reverse-mode autograd engine and a decoder-only transformer, both written from scratch on
+      top of NumPy. Every <span class="kbd">@</span>, every gradient, in plain sight.</p></div>
+    <div class="panel"><h3>3 modalities, 1 architecture</h3><p class="dim" style="font-size:14px">
+      Sort symbols, add numbers, recognise 8&times;8 images &mdash; the identical model learns all
+      three as "predict the next token", and starts working within seconds.</p></div>
+    <div class="panel"><h3>Real CUDA, real PTX &amp; SASS</h3><p class="dim" style="font-size:14px">
+      The matrix-multiply and softmax that power attention, written as CUDA kernels, verified on an
+      NVIDIA L4, and disassembled so you can read the GPU's own instructions.</p></div>
+  </div>
+
+  <h2>The descent</h2>
+  <p>This is the spine of the whole repository. Each layer is a real file you can open. Start at the
+  top with the math you recognise; keep falling until you hit the floor of the machine.</p>
+
+  <div class="stack" id="stack">
+    <div class="layer"><div class="l-file">model.py</div><div class="l-desc">the transformer &mdash; embeddings, attention, MLP, written as <code>Tensor</code> math</div></div>
+    <div class="arrowdown">▼ every operation records how to differentiate itself</div>
+    <div class="layer"><div class="l-file">nanograd.py</div><div class="l-desc">a ~200-line autograd engine &mdash; this <i>is</i> backpropagation, as closures</div></div>
+    <div class="arrowdown">▼ tensors are NumPy arrays; <code>@</code> is a matrix multiply</div>
+    <div class="layer"><div class="l-file">numpy / BLAS</div><div class="l-desc">dense linear algebra on the CPU</div></div>
+    <div class="arrowdown">▼ the same math, moved onto the GPU</div>
+    <div class="layer deep"><div class="l-file">kernels/*.cu</div><div class="l-desc">CUDA C++: a tiled shared-memory matmul, a warp-shuffle softmax</div></div>
+    <div class="arrowdown">▼ nvcc lowers C++ to a virtual ISA</div>
+    <div class="layer deep"><div class="l-file">*.ptx</div><div class="l-desc">PTX &mdash; NVIDIA's portable assembly: <code>fma.rn.f32</code>, <code>.shared</code>, <code>shfl.sync</code></div></div>
+    <div class="arrowdown">▼ ptxas compiles PTX for your exact GPU</div>
+    <div class="layer deep"><div class="l-file">*.sass</div><div class="l-desc">SASS &mdash; the real machine code the SMs run: <code>FFMA</code>, <code>LDS</code>, <code>BAR.SYNC</code>, <code>SHFL.DOWN</code></div></div>
+  </div>
+
+  <div class="note">Suggested hour: 15&nbsp;min on <b>Architecture</b> &amp; the code, 15&nbsp;min on
+  <b>Train&nbsp;&amp;&nbsp;watch</b> (press Train, watch weights move), 20&nbsp;min on <b>Into the GPU</b>
+  reading the kernels next to their PTX/SASS, 10&nbsp;min wandering. Every claim here is backed by a file
+  in this repo &mdash; open them in <b>Read the code</b>.</div>
+</section>
+
+<!-- ============================ ARCH ============================ -->
+<section class="view" id="arch">
+  <h1>The architecture</h1>
+  <p class="lead">A decoder-only transformer &mdash; GPT in miniature. It reads a sequence of integer
+  tokens and predicts the next one at every position. That single ability expresses all three tasks.</p>
+
+  <div class="panel">
+  <h3>The forward pass, in full</h3>
+  <pre class="code">tokens ─► <span class="kw">token embedding</span> + <span class="kw">positional embedding</span>      wte[id] + wpe[pos]
+       ─► <span class="kw">Block</span> × n_layer
+       ─► final <span class="kw">LayerNorm</span>
+       ─► <span class="kw">unembed</span>  → logits over the vocabulary       x @ head_w
+
+<span class="cm">Block (pre-norm residual):</span>
+   x = x + Attention( LayerNorm(x) )
+   x = x + MLP( LayerNorm(x) )
+
+<span class="cm">Causal self-attention (per head):</span>
+   Q,K,V = split( x @ attn_w )
+   A     = softmax( Q·Kᵀ / √d  +  causal_mask )    <span class="cm">← future is masked to −∞</span>
+   out   = A · V</pre>
+  </div>
+
+  <div class="grid cols2">
+    <div class="panel"><h3>Why "predict the next token" is enough</h3>
+      <p style="font-size:14px">Each task is just a sequence with an answer region we score:</p>
+      <pre class="code"><span class="cm">sort  </span> 4 5 7 2 2 4  &gt;  <span class="kw">2 2 4 4 5 7</span>
+<span class="cm">add   </span> 8 8 + 6 8 =  <span class="kw">6 5 1</span>     <span class="cm">(answer least-significant first)</span>
+<span class="cm">shapes</span> [64 pixel tokens] =  <span class="kw">box</span></pre>
+      <p style="font-size:14px" class="dim">Symbolic, arithmetic, and visual inputs all become token ids.
+      The model never knows which modality it is looking at.</p></div>
+    <div class="panel"><h3>The whole model, by the numbers</h3>
+      <table class="bench"><tbody>
+        <tr><td>layers</td><td>3</td></tr>
+        <tr><td>heads</td><td>4</td></tr>
+        <tr><td>embedding dim</td><td>64</td></tr>
+        <tr><td>parameters</td><td>~152k</td></tr>
+        <tr><td>optimizer</td><td>Adam (hand-written, 12 lines)</td></tr>
+        <tr><td>precision</td><td>float32</td></tr>
+      </tbody></table>
+      <p style="font-size:14px" class="dim">Small enough to train on a CPU in seconds, yet structurally
+      identical to a production GPT.</p></div>
+  </div>
+
+  <h2>The gradient that matters most</h2>
+  <p>Backprop through a matrix multiply <code>C = A @ B</code> is just two more matrix multiplies.
+  Internalise this one rule and the rest of <code>nanograd.py</code> reads easily:</p>
+  <pre class="code">  forward:   C = A @ B
+  backward:  dA = dC @ Bᵀ        dB = Aᵀ @ dC</pre>
+  <p class="dim" style="font-size:14px">Open <b>Read the code → nanograd.py</b> and find <code>__matmul__</code>; that is the
+  exact code, four lines, with the broadcasting handled by one helper.</p>
+</section>
+
+<!-- ============================ TRAIN ============================ -->
+<section class="view" id="train">
+  <h1>Train it &amp; watch the weights learn</h1>
+  <p class="lead">Pick a task and press Train. The browser launches <code>python3 train.py &lt;task&gt;</code>
+  and polls its live JSON. Loss should fall and accuracy climb within the first few seconds.</p>
+
+  <div class="taskbar" id="taskbar">
+    <div class="chip active" data-task="sort">sort<small>symbolic · 6 digits</small></div>
+    <div class="chip" data-task="add">add<small>arithmetic · a+b</small></div>
+    <div class="chip" data-task="shapes">shapes<small>vision · 8×8 image</small></div>
+    <button class="primary" id="trainBtn">▶ Train</button>
+    <span id="runState" class="dim" style="font-size:13px"></span>
+  </div>
+
+  <div class="stats panel">
+    <div class="stat"><div class="v" id="sStep">—</div><div class="k">step</div></div>
+    <div class="stat"><div class="v bad" id="sLoss">—</div><div class="k">loss</div></div>
+    <div class="stat"><div class="v acc" id="sAcc">—</div><div class="k">accuracy</div></div>
+    <div class="stat"><div class="v" id="sParams">—</div><div class="k">params</div></div>
+    <div class="stat"><div class="v" id="sTime">—</div><div class="k">seconds</div></div>
+  </div>
+
+  <div class="grid cols2">
+    <div class="panel"><div class="label">loss (cross-entropy) &amp; accuracy vs step</div>
+      <canvas id="lossChart" height="240"></canvas>
+      <div class="legend"><span><span class="sw" style="background:#ff6b6b"></span>loss</span>
+        <span><span class="sw" style="background:#5ad1ff"></span>accuracy</span></div></div>
+    <div class="panel"><div class="label">live predictions (✓ = whole answer correct)</div>
+      <div class="samples" id="samples"><span class="dim">press Train to begin…</span></div>
+      <canvas id="imgCanvas" height="160" style="margin-top:12px;display:none"></canvas>
+      <div class="label" id="imgLabel" style="display:none"></div></div>
+  </div>
+
+  <div class="grid cols2">
+    <div class="panel"><div class="label">attention map · head 0, first example (rows attend to columns)</div>
+      <canvas id="attnCanvas" height="260"></canvas>
+      <div class="legend"><span class="dim">bright = strong attention · note the lower-triangular (causal) shape</span></div></div>
+    <div class="panel"><div class="label">weight histograms — watch them spread as the model learns</div>
+      <canvas id="histCanvas" height="260"></canvas></div>
+  </div>
+
+  <div class="panel"><div class="label">weight matrices (top-left 40×40) · blue −, red + · these are the numbers being trained</div>
+    <div class="grid cols2" id="weightGrid"></div></div>
+</section>
+
+<!-- ============================ GPU ============================ -->
+<section class="view" id="gpu">
+  <h1>Into the GPU</h1>
+  <p class="lead">Attention is dominated by two operations: a matrix multiply and a softmax. Here they are
+  as real CUDA kernels, verified against a CPU reference on an NVIDIA L4 &mdash; then disassembled, twice,
+  so you can read what the silicon actually runs.</p>
+
+  <div class="panel"><h3>Measured on this machine (NVIDIA L4, sm_89)</h3>
+    <pre class="code" id="benchOut">run <span class="kbd">kernels/build.sh</span> to populate these numbers… (sample 512×512×512 GEMM)
+
+naive   one thread per output, reads A &amp; B straight from global memory
+tiled   16×16 blocks stage tiles into __shared__ memory, reuse each load 16×  →  faster</pre>
+  </div>
+
+  <div class="filetabs" id="kernelTabs">
+    <div class="ft active" data-k="matmul">matmul · tiling</div>
+    <div class="ft" data-k="softmax">softmax · warp shuffle</div>
+  </div>
+
+  <div class="grid cols2">
+    <div class="panel"><div class="label" id="srcLabel">kernels/matmul.cu — the CUDA C++ you write</div>
+      <pre class="code" id="srcPane">loading…</pre></div>
+    <div class="panel">
+      <div class="filetabs" id="asmTabs">
+        <div class="ft active" data-a="ptx">PTX · virtual ISA</div>
+        <div class="ft" data-a="sass">SASS · real machine code</div>
+      </div>
+      <div class="label" id="asmLabel">web/asm/matmul.ptx</div>
+      <pre class="code" id="asmPane">loading…</pre></div>
+  </div>
+
+  <div class="grid cols2">
+    <div class="panel" id="noteMatmul"><h3>What to look for in matmul</h3>
+      <p style="font-size:14px">The tiled kernel's inner loop is the heart of all of deep learning.</p>
+      <ul style="font-size:14px;color:var(--text)">
+        <li><code>.shared</code> (PTX) / <code>STS</code>,<code>LDS</code> (SASS) — staging a tile into fast
+          on-chip memory and reading it back, instead of hitting slow DRAM 16× more.</li>
+        <li><code>bar.sync</code> / <code>BAR.SYNC</code> — the <code>__syncthreads()</code> barrier that makes
+          the 256 threads of a block agree the tile is fully loaded.</li>
+        <li><code>fma.rn.f32</code> / <code>FFMA</code> — one fused multiply-add: <code>acc += a*b</code>, the
+          only arithmetic that actually matters, run billions of times.</li>
+      </ul></div>
+    <div class="panel" id="noteSoftmax" style="display:none"><h3>What to look for in softmax</h3>
+      <p style="font-size:14px">One warp (32 threads) cooperatively reduces one row — with no shared memory at all.</p>
+      <ul style="font-size:14px;color:var(--text)">
+        <li><code>shfl.sync.down.b32</code> / <code>SHFL.DOWN</code> — the warp shuffle: lane <i>i</i> reads a
+          register <i>directly</i> out of lane <i>i+offset</i>. Five of them reduce 32 values to one.</li>
+        <li>No <code>bar.sync</code> in the reduction — threads in a warp run in lockstep, so they need no
+          barrier to exchange registers. This is the GPU's most distinctive trick.</li>
+        <li><code>MUFU.EX2</code> (SASS) — the special-function unit computing <code>exp</code> in hardware.</li>
+      </ul></div>
+  </div>
+</section>
+
+<!-- ============================ CODE ============================ -->
+<section class="view" id="code">
+  <h1>Read the code</h1>
+  <p class="lead">The entire repository, served to you by the same tiny Python server you are talking to.
+  This is the source the rest of the site describes &mdash; read it top to bottom.</p>
+  <div class="filetabs" id="codeTabs"></div>
+  <div class="label" id="codeLabel"></div>
+  <pre class="code" id="codePane">select a file…</pre>
+</section>
+
+</main>
+<script src="/web/app.js"></script>
+</body>
+</html>
