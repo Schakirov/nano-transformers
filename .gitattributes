@@ -1,0 +1,3 @@
+# .sass/.ptx here are NVIDIA GPU assembly dumps, not the Sass stylesheet language.
+*.sass linguist-language=Text
+*.ptx linguist-language=Text
